@@ -44,6 +44,7 @@
 #include "zix/common.h"
 #include "zix/ring.h"
 #include "zix/sem.h"
+#include "nsm.h" // NSM NOTE nsm header
 
 #if USE_SUIL
 #  include "suil/suil.h"
@@ -65,6 +66,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
 
 #define NS_RDF "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 #define NS_XSD "http://www.w3.org/2001/XMLSchema#"
@@ -94,6 +96,9 @@
    anybody(TM).
 */
 #define N_BUFFER_CYCLES 16
+
+static int wait_nsm = 1; // NSM NOTE
+
 
 static ZixSem* exit_sem = NULL; ///< Exit semaphore used by signal handler
 
@@ -739,11 +744,21 @@ jalv_run(Jalv* jalv, uint32_t nframes)
 int
 jalv_update(Jalv* jalv)
 {
+ 
+  if (jalv->nsm_is_active) // NSM 
+    nsm_check_nowait(jalv->nsm); // NSM 
+
   // Check quit flag and close if set
   if (zix_sem_try_wait(&jalv->done)) {
     jalv_frontend_close(jalv);
     return 0;
   }
+
+  /*  TODO NSM NOTE capability :dirty:
+   *  Some clients may be able to inform the server when they have unsaved changes pending. 
+   *  Such clients may optionally send is_dirty and is_clean messages.
+   *  Clients which have this capability should include :dirty: in their announce capability string.
+  */
 
   // Emit UI events
   ControlChange ev;
@@ -1114,16 +1129,8 @@ jalv_init_display(Jalv* const jalv)
 int
 jalv_open(Jalv* const jalv, int* argc, char*** argv)
 {
-#if USE_SUIL
-  suil_init(argc, argv, SUIL_ARG_NONE);
-#endif
 
-  // Parse command-line arguments
-  int ret = 0;
-  if ((ret = jalv_frontend_init(argc, argv, &jalv->opts))) {
-    jalv_close(jalv);
-    return ret;
-  }
+  // NSM NOTE: moved SUIL check to main.
 
   // Load the LV2 world
   LilvWorld* const world = lilv_world_new();
@@ -1226,6 +1233,7 @@ jalv_open(Jalv* const jalv, int* argc, char*** argv)
 
   // Load preset, if specified
   if (jalv->opts.preset) {
+    jalv_log(JALV_LOG_INFO, "NO NSM: jalv->opts.preset \n"); // NSM NOTE, log msg for testing.
     LilvNode* preset = lilv_new_uri(jalv->world, jalv->opts.preset);
 
     jalv_load_presets(jalv, NULL, NULL);
@@ -1411,6 +1419,336 @@ jalv_open(Jalv* const jalv, int* argc, char*** argv)
   return 0;
 }
 
+/* NSM NOTE:
+ * To avoid touching stuff we don't understand, we just copied 
+ * the jalv_open function and edited it for
+ * NSM specific requirements. Our goal was just to make it work.
+ * We lack deep knowledge of C and LV2.
+ */
+int
+jalv_open_nsm(Jalv* const jalv) //, int* argc, char*** argv)
+{
+
+// NSM
+/*
+#if USE_SUIL
+  suil_init(argc, argv, SUIL_ARG_NONE);
+#endif
+
+  // Parse command-line arguments
+  int ret = 0;
+  if ((ret = jalv_frontend_init(argc, argv, &jalv->opts))) {
+    jalv_close(jalv);
+    return ret;
+  }
+*/
+
+
+  jalv_log(JALV_LOG_INFO, "jalv_open_nsm \n"); // NSM
+  // Load the LV2 world
+  LilvWorld* const world = lilv_world_new();
+  lilv_world_load_all(world);
+
+  jalv->world         = world;
+  jalv->env           = serd_env_new(NULL);
+  jalv->symap         = symap_new();
+  jalv->block_length  = 4096U;
+  jalv->midi_buf_size = 1024U;
+  jalv->play_state    = JALV_PAUSED;
+  jalv->bpm           = 120.0f;
+  jalv->control_in    = (uint32_t)-1;
+  jalv->log.urids     = &jalv->urids;
+  jalv->log.tracing   = jalv->opts.trace;
+
+  zix_sem_init(&jalv->symap_lock, 1);
+  zix_sem_init(&jalv->work_lock, 1);
+  zix_sem_init(&jalv->done, 0);
+  zix_sem_init(&jalv->paused, 0);
+
+  jalv_init_env(jalv->env);
+  jalv_init_urids(jalv->symap, &jalv->urids);
+  jalv_init_nodes(world, &jalv->nodes);
+  jalv_init_features(jalv);
+  lv2_atom_forge_init(&jalv->forge, &jalv->map);
+
+  // Set up atom reading and writing environment
+  jalv->sratom = sratom_new(&jalv->map);
+  sratom_set_env(jalv->sratom, jalv->env);
+  jalv->ui_sratom = sratom_new(&jalv->map);
+  sratom_set_env(jalv->ui_sratom, jalv->env);
+
+  // Create temporary directory for plugin state
+#ifdef _WIN32
+  jalv->temp_dir = jalv_strdup("jalvXXXXXX");
+  _mktemp(jalv->temp_dir);
+#else
+  char* templ    = jalv_strdup("/tmp/jalv-XXXXXX");
+  jalv->temp_dir = jalv_strjoin(mkdtemp(templ), "/");
+  free(templ);
+#endif
+
+  // Get plugin URI from loaded state or command line
+  LilvState* state      = NULL;
+  LilvNode*  plugin_uri = NULL;
+
+
+  // NSM 
+  struct stat info;
+  stat(jalv->nsm_path, &info); // NSM NOTE
+  if ((info.st_mode & S_IFMT) == S_IFDIR) {
+    jalv_log(JALV_LOG_INFO, "jalv->nsm_path is DIR %s, exists \n", jalv->nsm_path);
+    char* path = jalv_strjoin(jalv->nsm_path, "/state.ttl");
+    // NSM NOTE check if state.ttl exists.
+    if ( stat(path, &info) == 0) { // NSM NOTE use same struct?
+      jalv_log(JALV_LOG_INFO, "path %s exists \n", path);
+      state = lilv_state_new_from_file(jalv->world, &jalv->map, NULL, path);
+      free(path);
+      if (state) {
+        plugin_uri = lilv_node_duplicate(lilv_state_get_plugin_uri(state));
+      } else {
+        jalv_log(JALV_LOG_ERR, "Failed to load state from %s/state.ttl\n", jalv->nsm_path);
+        jalv_close(jalv);
+        return -2;
+      }
+    }
+  } else {
+      jalv_log(JALV_LOG_INFO, "jalv->nsm_path doesn't exists, trying to create it \n");
+      if (create_project_dir(jalv->nsm_path) != 0) {
+        jalv_log(JALV_LOG_ERR, "Failed to create nsm project dir %s\n", jalv->nsm_path);
+        jalv_close(jalv);
+        return -2;
+      }
+  }
+
+  // NSM  
+  if (!plugin_uri) {    // if ( strcmp(n, "jalv-noui") == 0)
+    jalv_log(JALV_LOG_INFO, "!plugin_uri \n");
+    plugin_uri = jalv_frontend_select_plugin(jalv);
+  }
+
+  if (!plugin_uri) {  // if ( strcmp(n, "jalv-noui") == 0)
+    jalv_log(JALV_LOG_ERR, "Missing plugin URI, try lv2ls to list plugins\n");
+    jalv_close(jalv);
+    return -3;
+  }
+
+
+  // Find plugin
+  const char* const        plugin_uri_str = lilv_node_as_string(plugin_uri);
+  const LilvPlugins* const plugins        = lilv_world_get_all_plugins(world);
+  jalv_log(JALV_LOG_INFO, "Plugin: %s\n", plugin_uri_str);
+  jalv->plugin = lilv_plugins_get_by_uri(plugins, plugin_uri);
+  lilv_node_free(plugin_uri);
+  if (!jalv->plugin) {
+    jalv_log(JALV_LOG_ERR, "Failed to find plugin\n");
+    jalv_close(jalv);
+    return -4;
+  }
+
+  // Create workers if necessary
+  if (lilv_plugin_has_extension_data(jalv->plugin,
+                                     jalv->nodes.work_interface)) {
+    jalv_log(JALV_LOG_INFO, "lilv_plugin_has_extension_data(jalv->plugin, ... \n");
+    jalv->worker                = jalv_worker_new(&jalv->work_lock, true);
+    jalv->features.sched.handle = jalv->worker;
+    if (jalv->safe_restore) {
+      jalv_log(JALV_LOG_INFO, "jalv->safe_restore \n");
+      jalv->state_worker           = jalv_worker_new(&jalv->work_lock, false);
+      jalv->features.ssched.handle = jalv->state_worker;
+    }
+  }
+
+  // Load preset, if specified
+  if (jalv->opts.preset) {
+    jalv_log(JALV_LOG_INFO, "jalv->opts.preset \n");
+    LilvNode* preset = lilv_new_uri(jalv->world, jalv->opts.preset);
+
+    jalv_load_presets(jalv, NULL, NULL);
+    state        = lilv_state_new_from_world(jalv->world, &jalv->map, preset);
+    jalv->preset = state;
+    lilv_node_free(preset);
+    if (!state) {
+      jalv_log(JALV_LOG_ERR, "Failed to find preset <%s>\n", jalv->opts.preset);
+      jalv_close(jalv);
+      return -5;
+    }
+  }
+
+  // Check for thread-safe state restore() method
+  LilvNode* state_threadSafeRestore =
+    lilv_new_uri(jalv->world, LV2_STATE__threadSafeRestore);
+  if (lilv_plugin_has_feature(jalv->plugin, state_threadSafeRestore)) {
+    jalv->safe_restore = true;
+  }
+  lilv_node_free(state_threadSafeRestore);
+
+  if (!state) {
+    jalv_log(JALV_LOG_INFO, "Not restoring state, load the plugin as a preset to get default \n");
+    // Not restoring state, load the plugin as a preset to get default
+    state = lilv_state_new_from_world(
+      jalv->world, &jalv->map, lilv_plugin_get_uri(jalv->plugin));
+  }
+
+  // Get a plugin UI
+  jalv_log(JALV_LOG_INFO, "get a plugin UI \n");
+  jalv->uis = lilv_plugin_get_uis(jalv->plugin);
+  if (!jalv->opts.generic_ui) {
+    if ((jalv->ui = jalv_select_custom_ui(jalv))) {
+#if USE_SUIL
+      const char* host_type_uri = jalv_frontend_ui_type();
+      if (host_type_uri) {
+        LilvNode* host_type = lilv_new_uri(jalv->world, host_type_uri);
+
+        if (!lilv_ui_is_supported(
+              jalv->ui, suil_ui_supported, host_type, &jalv->ui_type)) {
+          jalv->ui = NULL;
+        }
+
+        lilv_node_free(host_type);
+      }
+#endif
+
+      if (jalv->ui) {
+        jalv_log(JALV_LOG_INFO,
+                 "UI:           %s\n",
+                 lilv_node_as_uri(lilv_ui_get_uri(jalv->ui)));
+      }
+    }
+  }
+
+  // Create port and control structures
+  jalv_create_ports(jalv);
+  jalv_create_controls(jalv, true);
+  jalv_create_controls(jalv, false);
+
+  if (!(jalv->backend = jalv_backend_init(jalv))) {
+    jalv_log(JALV_LOG_ERR, "Failed to connect to audio system\n");
+    jalv_close(jalv);
+    return -6;
+  }
+
+  jalv_log(JALV_LOG_INFO, "Sample rate:  %u Hz\n", (uint32_t)jalv->sample_rate);
+  jalv_log(JALV_LOG_INFO, "Block length: %u frames\n", jalv->block_length);
+  jalv_log(JALV_LOG_INFO, "MIDI buffers: %zu bytes\n", jalv->midi_buf_size);
+
+  if (jalv->opts.buffer_size == 0) {
+    /* The UI ring is fed by plugin output ports (usually one), and the UI
+       updates roughly once per cycle.  The ring size is a few times the size
+       of the MIDI output to give the UI a chance to keep up.  The UI should be
+       able to keep up with 4 cycles, and tests show this works for me, but
+       this value might need increasing to avoid overflows. */
+    jalv->opts.buffer_size = jalv->midi_buf_size * N_BUFFER_CYCLES;
+  }
+
+  jalv_init_display(jalv);
+  jalv_init_options(jalv);
+
+  // Create Plugin <=> UI communication buffers
+  jalv->ui_to_plugin = zix_ring_new(NULL, jalv->opts.buffer_size);
+  jalv->plugin_to_ui = zix_ring_new(NULL, jalv->opts.buffer_size);
+  zix_ring_mlock(jalv->ui_to_plugin);
+  zix_ring_mlock(jalv->plugin_to_ui);
+
+  // Build feature list for passing to plugins
+  const LV2_Feature* const features[] = {&jalv->features.map_feature,
+                                         &jalv->features.unmap_feature,
+                                         &jalv->features.sched_feature,
+                                         &jalv->features.log_feature,
+                                         &jalv->features.options_feature,
+                                         &static_features[0],
+                                         &static_features[1],
+                                         &static_features[2],
+                                         &static_features[3],
+                                         NULL};
+
+  jalv->feature_list = (const LV2_Feature**)calloc(1, sizeof(features));
+  if (!jalv->feature_list) {
+    jalv_log(JALV_LOG_ERR, "Failed to allocate feature list\n");
+    jalv_close(jalv);
+    return -7;
+  }
+  memcpy(jalv->feature_list, features, sizeof(features));
+
+  // Check that any required features are supported
+  LilvNodes* req_feats = lilv_plugin_get_required_features(jalv->plugin);
+  LILV_FOREACH (nodes, f, req_feats) {
+    const char* uri = lilv_node_as_uri(lilv_nodes_get(req_feats, f));
+    if (!feature_is_supported(jalv, uri)) {
+      jalv_log(JALV_LOG_ERR, "Feature %s is not supported\n", uri);
+      jalv_close(jalv);
+      return -8;
+    }
+  }
+  lilv_nodes_free(req_feats);
+
+  // Instantiate the plugin
+  jalv->instance = lilv_plugin_instantiate(
+    jalv->plugin, jalv->sample_rate, jalv->feature_list);
+  if (!jalv->instance) {
+    jalv_log(JALV_LOG_ERR, "Failed to instantiate plugin\n");
+    jalv_close(jalv);
+    return -9;
+  }
+
+  // Point things to the instance that require it
+
+  jalv->features.ext_data.data_access =
+    lilv_instance_get_descriptor(jalv->instance)->extension_data;
+
+  const LV2_Worker_Interface* worker_iface =
+    (const LV2_Worker_Interface*)lilv_instance_get_extension_data(
+      jalv->instance, LV2_WORKER__interface);
+
+  jalv_worker_start(jalv->worker, worker_iface, jalv->instance->lv2_handle);
+  jalv_worker_start(
+    jalv->state_worker, worker_iface, jalv->instance->lv2_handle);
+
+  jalv_log(JALV_LOG_INFO, "\n");
+  if (!jalv->buf_size_set) {
+    jalv_allocate_port_buffers(jalv);
+  }
+
+  // Apply loaded state to plugin instance if necessary
+  if (state) {
+    jalv_apply_state(jalv, state);
+    lilv_state_free(state);
+  }
+
+  // Apply initial controls from command-line arguments
+  if (jalv->opts.controls) {
+    for (char** c = jalv->opts.controls; *c; ++c) {
+      jalv_apply_control_arg(jalv, *c);
+    }
+  }
+
+  // Create Jack ports and connect plugin ports to buffers
+  for (uint32_t i = 0; i < jalv->num_ports; ++i) {
+    jalv_backend_activate_port(jalv, i);
+  }
+
+  // Print initial control values
+  for (size_t i = 0; i < jalv->controls.n_controls; ++i) {
+    ControlID* control = jalv->controls.controls[i];
+    if (control->type == PORT && control->is_writable) {
+      struct Port* port = &jalv->ports[control->index];
+      jalv_print_control(jalv, port, port->control);
+    }
+  }
+
+  // Activate plugin
+  lilv_instance_activate(jalv->instance);
+
+  // Discover UI
+  jalv->has_ui = jalv_frontend_discover(jalv);
+
+  // Activate audio backend
+  jalv_backend_activate(jalv);  // TODO NOTE backend audio NOTE not the address? &jalv
+  jalv->play_state = JALV_RUNNING;
+
+  return 0;
+}
+
+// TODO NSM NOTE free nsm stuff?
 int
 jalv_close(Jalv* const jalv)
 {
@@ -1489,15 +1827,180 @@ jalv_close(Jalv* const jalv)
   return 0;
 }
 
+
+// NSM 
+int
+create_project_dir(const char *path)
+{
+  if (mkdir(path, 0755) != 0 ) // NSM NOTE TODO 0777?
+    return 1;
+
+  return 0;
+}
+
+
+// NSM
+int
+cb_nsm_save(char **out_msg, void *userdata) {
+  // TODO check if there is anything to save? If we're not at open still chosing our plugin.
+  jalv_log(JALV_LOG_INFO, "cb_nsm_save \n");
+  Jalv* jalv = (Jalv*)userdata;
+  jalv_save(jalv, jalv->nsm_path); // NSM TODO error handling
+  return ERR_OK;
+}
+
+/* NSM TODO capability :switch:, client is capable of responding to multiple `open` 
+ * messages without restarting. */
+int
+cb_nsm_open(const char *path, const char *display_name, const char *client_id, char **out_msg, void *userdata) {
+  jalv_log(JALV_LOG_INFO, "cb_nsm_open \n");
+  jalv_log(JALV_LOG_INFO, "path: %s \n", path);
+  jalv_log(JALV_LOG_INFO, "display_name: %s \n", display_name);
+  Jalv* jalv = (Jalv*)userdata; 
+  if (jalv == NULL)
+    jalv_log(JALV_LOG_INFO, "jalv == NULL \n");
+  //jalv->nsm->nsm_is_active = true; // TODO
+  jalv->nsm_path = jalv_strdup(path); // TODO free?
+  jalv->nsm_jack_name = jalv_strdup(client_id); // TODO fee?
+  jalv_log(JALV_LOG_INFO, "jalv->nsm_path: %s \n", jalv->nsm_path);
+  jalv_log(JALV_LOG_INFO, "jalv->nsm_jack_name: %s \n", jalv->nsm_jack_name);
+  int NsmErr = 0;
+  if (jalv_open_nsm(jalv) != 0) {
+      jalv_log(JALV_LOG_INFO, "ERR_GENERAL \n");
+      NsmErr = ERR_GENERAL; // TODO die?
+      if (jalv->nsm_gui_visible) {
+        nsm_send_is_shown(jalv->nsm);
+      } else {
+          nsm_send_is_hidden(jalv->nsm);
+      }
+  } else {
+      NsmErr = ERR_OK;
+      jalv_log(JALV_LOG_INFO, "ERR_OK \n");
+  }
+  wait_nsm = 0;
+  jalv_log(JALV_LOG_INFO, "wait_nsm = 0 \n");
+  return NsmErr;
+}
+
+// NSM
+void 
+cb_nsm_show(void *userdata)
+{
+  jalv_log(JALV_LOG_INFO, "cb_nsm_show \n");
+  Jalv* jalv = (Jalv*)userdata; 
+  jalv_frontend_show(jalv);
+  nsm_send_is_shown(jalv->nsm);
+  jalv->nsm_gui_visible = 1;
+}
+
+// NSM
+void
+cb_nsm_hide(void *userdata)
+{
+  jalv_log(JALV_LOG_INFO, "cb_nsm_hide \n");
+  Jalv* jalv = (Jalv*)userdata;
+  jalv_frontend_hide(jalv);
+  nsm_send_is_hidden(jalv->nsm);
+  jalv->nsm_gui_visible = 0;
+}
+
+// NSM
+void
+cb_nsm_active( int b, void *userdata )
+{
+  jalv_log(JALV_LOG_INFO, "cb_nsm_active \n");
+  jalv_log(JALV_LOG_INFO, "nsm_is_active: %d \n", b);
+  Jalv* jalv = (Jalv*)userdata;
+  jalv->nsm_is_active = b;
+}
+
+// NSM related code addition
+char *
+jalv_basename (const char *filename)
+{
+  char *p = strrchr (filename, '/');
+  return p ? p + 1 : (char *) filename;
+}
+
+// NSM
+int
+jalv_init_nsm(Jalv* jalv, char*** argv, const char *n) { //, const char *nsm_url) { // char** argv?
+  jalv_log(JALV_LOG_INFO, "jalv_init_nsm \n");
+  //char *APP_TITLE = "jalv";  // TODO
+  jalv->nsm = nsm_new(); // TODO check for NULL?
+  jalv->nsm_gui_visible = 0;
+  nsm_set_active_callback(jalv->nsm, cb_nsm_active, jalv);
+  nsm_set_open_callback(jalv->nsm, cb_nsm_open, jalv); // ->nsm ); // 0 is userdata // jalv->nsm
+  nsm_set_save_callback(jalv->nsm, cb_nsm_save, jalv); //->nsm ); // racecondition?
+  
+  const char* nsm_url = getenv("NSM_URL"); 
+  if ( nsm_init(jalv->nsm, nsm_url) == 0 ) {
+    jalv_log(JALV_LOG_INFO, "send announce \n");
+    jalv_log(JALV_LOG_INFO, "(*argv)[0]: %s \n",(*argv)[0] );
+
+    int timeout = 0;
+    /* NSM NOTE: we currently use jalv as pretty name for NSM, for all versions (gtk, qt).
+     * We think it's easier to change to a different version of jalv for the same jalv project
+     * later (particularly jalv no ui). See non-mixer non-mixer-noui as example. 
+     * This is for later concern though.
+     */
+    char *pname = "jalv";
+    nsm_send_announce(jalv->nsm, pname, ":optional-gui:", (*argv)[0]);
+    while (wait_nsm) 
+    {
+      nsm_check_wait(jalv->nsm, 200);
+      timeout++;
+      if (timeout > 500) { 
+          jalv_log(JALV_LOG_ERR, "nsm init timeout \n");
+          return 1; // TODO log, close
+      }
+    }
+    if ( strstr( nsm_get_session_manager_features ( jalv->nsm ), ":optional-gui:" ) )
+    {
+      nsm_set_show_callback( jalv->nsm, cb_nsm_show, jalv );
+      nsm_set_hide_callback( jalv->nsm, cb_nsm_hide, jalv );
+    }
+  } else {
+    jalv_log(JALV_LOG_ERR, "nsm_init failed \n");
+    nsm_free(jalv->nsm);
+    jalv->nsm = NULL;
+    return 1; // TODO log, close
+  }
+
+
+  return 0;
+}
+
 int
 main(int argc, char** argv)
 {
   Jalv jalv;
   memset(&jalv, '\0', sizeof(Jalv));
 
-  if (jalv_open(&jalv, &argc, &argv)) {
+#if USE_SUIL
+  suil_init(&argc, &argv, SUIL_ARG_NONE);
+#endif
+    
+  if ((jalv_frontend_init(&argc, &argv, &jalv.opts)) != 0) {
+    return EXIT_FAILURE; // log close?
+  }
+  
+  char *name = strdup( argv[0] ); // NOTE strdup needed?
+  char *n = jalv_basename( name );
+  const char* nsm_url = getenv("NSM_URL");
+
+  if (nsm_url && ( strcmp(n, "jalv") != 0)  // TODO jalv-noui
+) {
+    jalv_log(JALV_LOG_INFO, "nsm_url found \n"); 
+    if (jalv_init_nsm(&jalv, &argv, n)) { //, nsm_url)) {
+      jalv_log(JALV_LOG_ERR, "Failed to initialize nsm \n");
+      return EXIT_FAILURE; // log close?
+    }
+  } else if (jalv_open(&jalv, &argc, &argv)) {
     return EXIT_FAILURE;
   }
+
+  free(name); // NSM NOTE
 
   // Set up signal handlers
   setup_signals(&jalv);
