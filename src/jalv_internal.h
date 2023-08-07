@@ -35,6 +35,8 @@
 #include "lv2/urid/urid.h"
 #include "lv2/worker/worker.h"
 
+#include "nsm.h" // NSM
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -86,6 +88,11 @@ struct JalvImpl {
   JalvPlayState     play_state;   ///< Current play state
   char*             temp_dir;     ///< Temporary plugin state directory
   char*             save_dir;     ///< Plugin save directory
+  nsm_client_t*     nsm;          ///< NSM 
+  int               nsm_gui_visible; ///< NSM
+  int               nsm_is_active; ///< NSM
+  char*             nsm_jack_name;///< NSM
+  char*             nsm_path;     ///< NSM
   const LilvPlugin* plugin;       ///< Plugin class (RDF data)
   LilvState*        preset;       ///< Current preset
   LilvUIs*          uis;          ///< All plugin UIs (RDF data)
