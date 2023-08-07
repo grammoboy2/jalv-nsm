@@ -345,3 +345,15 @@ jalv_frontend_close(Jalv* jalv)
   zix_sem_post(&jalv->done);
   return 0;
 }
+
+// NSM
+void
+jalv_frontend_show(Jalv* jalv) {
+
+}
+
+// NSM
+void
+jalv_frontend_hide(Jalv* jalv) {
+
+}
