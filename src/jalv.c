@@ -45,7 +45,6 @@
 #include "zix/ring.h"
 #include "zix/sem.h"
 #include "nsm.h" // NSM NOTE nsm header
-#include "nsmclient.h" // NSM NOTE 
 
 #if USE_SUIL
 #  include "suil/suil.h"

@@ -25,7 +25,6 @@
 #include "zix/sem.h"
 
 #include "nsm.h" // NSM
-#include "nsmclient.h" // NSM 
 
 LV2_DISABLE_DEPRECATION_WARNINGS
 
