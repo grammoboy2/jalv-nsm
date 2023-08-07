@@ -50,6 +50,7 @@ get_port_value(const char* port_symbol,
 void
 jalv_save(Jalv* jalv, const char* dir)
 {
+  // TODO NSM send :dirty: clean.
   jalv->save_dir = jalv_strjoin(dir, "/");
 
   LilvState* const state =
