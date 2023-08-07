@@ -298,11 +298,18 @@ jack_latency_cb(jack_latency_callback_mode_t mode, void* data)
 static jack_client_t*
 jack_create_client(Jalv* jalv)
 {
+  jalv_log(JALV_LOG_INFO, "jack_create_client \n");
   jack_client_t* client = NULL;
 
   // Determine the name of the JACK client
+
   char* jack_name = NULL;
-  if (jalv->opts.name) {
+
+  // NSM NOTE: if nsm is active, then we get the jack name to use from the NSM server. 
+  if (jalv->nsm_is_active) { // NSM NOTE func nsm_is_active() already func of nsm.h.
+    jalv_log(JALV_LOG_INFO, "jack.c, jalv->nsm_is_active \n");
+    jack_name = jalv_strdup(jalv->nsm_jack_name);
+  } else if (jalv->opts.name) {
     // Name given on command line
     jack_name = jalv_strdup(jalv->opts.name);
   } else {
@@ -324,6 +331,8 @@ jack_create_client(Jalv* jalv)
       (jalv->opts.name_exact ? JackUseExactName : JackNullOption),
       NULL);
   }
+
+  jalv_log(JALV_LOG_INFO, "jack_name: %s \n", jack_name );
 
   free(jack_name);
 
