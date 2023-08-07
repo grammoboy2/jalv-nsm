@@ -7,7 +7,8 @@ project('jalv', ['c', 'cpp'],
         meson_version: '>= 0.56.0',
         default_options: [
           'b_ndebug=if-release',
-          'buildtype=release',
+          #'buildtype=release',
+          'buildtype=debug',
           'c_std=c99',
           'cpp_std=c++14',
         ])
@@ -72,6 +73,15 @@ suil_dep = dependency('suil-0',
                       version: '>= 0.10.0',
                       fallback: ['suil', 'suil_dep'],
                       required: get_option('suil'))
+
+liblo_dep = dependency('liblo',
+                      include_type: 'system',
+                      #version: '>= 0.10.0',
+                      #fallback: ['suil', 'suil_dep'],
+                      #required: get_option('suil'))
+                      )
+
+
 
 ###########
 # Drivers #
@@ -233,6 +243,7 @@ common_dependencies = [
   sratom_dep,
   suil_dep,
   thread_dep,
+  liblo_dep,
 ]
 
 # Internal JACK client library
