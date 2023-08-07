@@ -48,6 +48,15 @@ jalv_frontend_open(Jalv* jalv);
 int
 jalv_frontend_close(Jalv* jalv);
 
+// NSM TODO
+void 
+jalv_frontend_hide(Jalv* jalv); 
+
+void 
+jalv_frontend_show(Jalv* jalv);
+
+
+
 JALV_END_DECLS
 
 #endif // JALV_UI_H
