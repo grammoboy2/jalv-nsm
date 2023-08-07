@@ -1940,9 +1940,10 @@ jalv_init_nsm(Jalv* jalv, char*** argv, const char *n) { //, const char *nsm_url
 
     int timeout = 0;
     /* NSM NOTE: we currently use jalv as pretty name for NSM, for all versions (gtk, qt).
-     * We think it's easier to change to a different version of jalv for the same jalv project
-     * later (particularly jalv no ui). See non-mixer non-mixer-noui as example. 
-     * This is for later concern though.
+     * The NSM server stores the pretty name, the executable name and the clienId in the
+     * the session.nsm file: jalv:jalv.gtk3:nKLBV
+     * If a user wants to change to a different version of jalv for the same project, it's 
+     * probably easier if just one entry needs to be changed. 
      */
     char *pname = "jalv";
     nsm_send_announce(jalv->nsm, pname, ":optional-gui:", (*argv)[0]);
