@@ -112,7 +112,6 @@ jalv_frontend_show(Jalv* jalv) {
     if (jalv->window) { // && jalv->window) {
       //gtk_window_present(GTK_WINDOW(jalv->window));
       gtk_widget_show(jalv->window);
-    // TODO send gui shown to NSM server
     } else {
     }
   }
@@ -124,7 +123,6 @@ jalv_frontend_hide(Jalv* jalv) {
   //jalv_log(JALV_LOG_INFO, "jalv_frontend_hide(...) \n");
   if (jalv->nsm_gui_visible) { // && jalv->window) {
     gtk_widget_hide(jalv->window);
-    // TODO send gui hidden to NSM server
   }
 }
 
@@ -137,7 +135,6 @@ on_window_destroy_nsm(GtkWidget* ZIX_UNUSED(widget), void* data) //gpointer ZIX_
   if (jalv->nsm_is_active) {
     gtk_window_close(GTK_WINDOW(jalv->window));
     jalv->nsm_gui_visible = 0;
-    // TODO send gui hidden to NSM server
   } else {
     gtk_main_quit();
   }
