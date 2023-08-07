@@ -1420,12 +1420,32 @@ jalv_open(Jalv* const jalv, int* argc, char*** argv)
   return 0;
 }
 
+/* NSM NOTE:
+ * To avoid touching stuff we don't understand, we just copied 
+ * the jalv_open function and edited it for
+ * NSM specific requirements. Our goal was just to make it work.
+ * We lack deep knowledge of C and LV2.
+ */
 int
-jalv_open_nsm(Jalv* const jalv, int* argc, char*** argv)
+jalv_open_nsm(Jalv* const jalv) //, int* argc, char*** argv)
 {
 
-  // NSM NOTE: moved SUIL check to main.
+// NSM
+/*
+#if USE_SUIL
+  suil_init(argc, argv, SUIL_ARG_NONE);
+#endif
 
+  // Parse command-line arguments
+  int ret = 0;
+  if ((ret = jalv_frontend_init(argc, argv, &jalv->opts))) {
+    jalv_close(jalv);
+    return ret;
+  }
+*/
+
+
+  jalv_log(JALV_LOG_INFO, "jalv_open_nsm \n"); // NSM
   // Load the LV2 world
   LilvWorld* const world = lilv_world_new();
   lilv_world_load_all(world);
@@ -1471,41 +1491,53 @@ jalv_open_nsm(Jalv* const jalv, int* argc, char*** argv)
   // Get plugin URI from loaded state or command line
   LilvState* state      = NULL;
   LilvNode*  plugin_uri = NULL;
-  if (jalv->opts.load) {
-    struct stat info;
-    stat(jalv->opts.load, &info);
-    if ((info.st_mode & S_IFMT) == S_IFDIR) {
-      char* path = jalv_strjoin(jalv->opts.load, "/state.ttl");
+
+
+  // NSM 
+  struct stat info;
+  stat(jalv->nsm_path, &info); // NSM NOTE
+  if ((info.st_mode & S_IFMT) == S_IFDIR) {
+    jalv_log(JALV_LOG_INFO, "jalv->nsm_path is DIR %s, exists \n", jalv->nsm_path);
+    char* path = jalv_strjoin(jalv->nsm_path, "/state.ttl");
+    // NSM NOTE check if state.ttl exists.
+    if ( stat(path, &info) == 0) { // NSM NOTE use same struct?
+      jalv_log(JALV_LOG_INFO, "path %s exists \n", path);
       state = lilv_state_new_from_file(jalv->world, &jalv->map, NULL, path);
       free(path);
-    } else {
-      state = lilv_state_new_from_file(
-        jalv->world, &jalv->map, NULL, jalv->opts.load);
+      if (state) {
+        plugin_uri = lilv_node_duplicate(lilv_state_get_plugin_uri(state));
+      } else {
+        jalv_log(JALV_LOG_ERR, "Failed to load state from %s/state.ttl\n", jalv->nsm_path);
+        jalv_close(jalv);
+        return -2;
+      }
     }
-    if (!state) {
-      jalv_log(JALV_LOG_ERR, "Failed to load state from %s\n", jalv->opts.load);
-      jalv_close(jalv);
-      return -2;
-    }
-    plugin_uri = lilv_node_duplicate(lilv_state_get_plugin_uri(state));
-  } else if (*argc > 1) {
-    plugin_uri = lilv_new_uri(world, (*argv)[*argc - 1]);
+  } else {
+      jalv_log(JALV_LOG_INFO, "jalv->nsm_path doesn't exists, trying to create it \n");
+      if (create_project_dir(jalv->nsm_path) != 0) {
+        jalv_log(JALV_LOG_ERR, "Failed to create nsm project dir %s\n", jalv->nsm_path);
+        jalv_close(jalv);
+        return -2;
+      }
   }
 
-  if (!plugin_uri) {
+  // NSM  
+  if (!plugin_uri) {    // if ( strcmp(n, "jalv-noui") == 0)
+    jalv_log(JALV_LOG_INFO, "!plugin_uri \n");
     plugin_uri = jalv_frontend_select_plugin(jalv);
   }
 
-  if (!plugin_uri) {
+  if (!plugin_uri) {  // if ( strcmp(n, "jalv-noui") == 0)
     jalv_log(JALV_LOG_ERR, "Missing plugin URI, try lv2ls to list plugins\n");
     jalv_close(jalv);
     return -3;
   }
 
+
   // Find plugin
   const char* const        plugin_uri_str = lilv_node_as_string(plugin_uri);
   const LilvPlugins* const plugins        = lilv_world_get_all_plugins(world);
-  jalv_log(JALV_LOG_INFO, "Plugin:       %s\n", plugin_uri_str);
+  jalv_log(JALV_LOG_INFO, "Plugin: %s\n", plugin_uri_str);
   jalv->plugin = lilv_plugins_get_by_uri(plugins, plugin_uri);
   lilv_node_free(plugin_uri);
   if (!jalv->plugin) {
@@ -1517,9 +1549,11 @@ jalv_open_nsm(Jalv* const jalv, int* argc, char*** argv)
   // Create workers if necessary
   if (lilv_plugin_has_extension_data(jalv->plugin,
                                      jalv->nodes.work_interface)) {
+    jalv_log(JALV_LOG_INFO, "lilv_plugin_has_extension_data(jalv->plugin, ... \n");
     jalv->worker                = jalv_worker_new(&jalv->work_lock, true);
     jalv->features.sched.handle = jalv->worker;
     if (jalv->safe_restore) {
+      jalv_log(JALV_LOG_INFO, "jalv->safe_restore \n");
       jalv->state_worker           = jalv_worker_new(&jalv->work_lock, false);
       jalv->features.ssched.handle = jalv->state_worker;
     }
@@ -1527,7 +1561,7 @@ jalv_open_nsm(Jalv* const jalv, int* argc, char*** argv)
 
   // Load preset, if specified
   if (jalv->opts.preset) {
-    jalv_log(JALV_LOG_INFO, "NO NSM: jalv->opts.preset \n"); // NSM NOTE, log msg for testing.
+    jalv_log(JALV_LOG_INFO, "jalv->opts.preset \n");
     LilvNode* preset = lilv_new_uri(jalv->world, jalv->opts.preset);
 
     jalv_load_presets(jalv, NULL, NULL);
@@ -1550,12 +1584,14 @@ jalv_open_nsm(Jalv* const jalv, int* argc, char*** argv)
   lilv_node_free(state_threadSafeRestore);
 
   if (!state) {
+    jalv_log(JALV_LOG_INFO, "Not restoring state, load the plugin as a preset to get default \n");
     // Not restoring state, load the plugin as a preset to get default
     state = lilv_state_new_from_world(
       jalv->world, &jalv->map, lilv_plugin_get_uri(jalv->plugin));
   }
 
   // Get a plugin UI
+  jalv_log(JALV_LOG_INFO, "get a plugin UI \n");
   jalv->uis = lilv_plugin_get_uis(jalv->plugin);
   if (!jalv->opts.generic_ui) {
     if ((jalv->ui = jalv_select_custom_ui(jalv))) {
@@ -1707,7 +1743,7 @@ jalv_open_nsm(Jalv* const jalv, int* argc, char*** argv)
   jalv->has_ui = jalv_frontend_discover(jalv);
 
   // Activate audio backend
-  jalv_backend_activate(jalv);
+  jalv_backend_activate(jalv);  // TODO NOTE backend audio NOTE not the address? &jalv
   jalv->play_state = JALV_RUNNING;
 
   return 0;
