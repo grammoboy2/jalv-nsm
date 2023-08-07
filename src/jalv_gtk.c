@@ -24,6 +24,9 @@
 #include "zix/common.h"
 #include "zix/sem.h"
 
+#include "nsm.h" // NSM
+#include "nsmclient.h" // NSM 
+
 LV2_DISABLE_DEPRECATION_WARNINGS
 
 #include <gdk/gdk.h>
@@ -100,6 +103,47 @@ size_request(GtkWidget* widget, GtkRequisition* req)
 #else
   gtk_widget_size_request(widget, req);
 #endif
+}
+
+// NSM
+void
+jalv_frontend_show(Jalv* jalv) {
+  //jalv_log(JALV_LOG_INFO, "jalv_frontend_show(...) \n");
+  if (!jalv->nsm_gui_visible) {
+    if (jalv->window) { // && jalv->window) {
+      //gtk_window_present(GTK_WINDOW(jalv->window));
+      gtk_widget_show(jalv->window);
+    // TODO send gui shown to NSM server
+    } else {
+    }
+  }
+
+}
+
+void
+jalv_frontend_hide(Jalv* jalv) {
+  //jalv_log(JALV_LOG_INFO, "jalv_frontend_hide(...) \n");
+  if (jalv->nsm_gui_visible) { // && jalv->window) {
+    gtk_widget_hide(jalv->window);
+    // TODO send gui hidden to NSM server
+  }
+}
+
+// NSM edits 
+static void
+on_window_destroy_nsm(GtkWidget* ZIX_UNUSED(widget), void* data) //gpointer ZIX_UNUSED(data))
+{
+  //jalv_log(JALV_LOG_INFO, "jalv_gtk.c: on_window_destroy_nsm(...) \n");
+  Jalv* jalv = (Jalv*)data;
+  if (jalv->nsm_is_active) {
+    gtk_window_close(GTK_WINDOW(jalv->window));
+    jalv->nsm_gui_visible = 0;
+    // TODO send gui hidden to NSM server
+  } else {
+    gtk_main_quit();
+  }
+  //gtk_main_quit();
+
 }
 
 static void
@@ -250,25 +294,30 @@ static void
 on_save_activate(GtkWidget* ZIX_UNUSED(widget), void* ptr)
 {
   Jalv*      jalv = (Jalv*)ptr;
-  GtkWidget* dialog =
-    gtk_file_chooser_dialog_new("Save State",
-                                (GtkWindow*)jalv->window,
-                                GTK_FILE_CHOOSER_ACTION_CREATE_FOLDER,
-                                "_Cancel",
-                                GTK_RESPONSE_CANCEL,
-                                "_Save",
-                                GTK_RESPONSE_ACCEPT,
-                                NULL);
+  if (jalv->nsm_is_active) { // NSM
+    jalv_save(jalv, jalv->nsm_path); // TODO no error handling?
+    // TODO send clean to NSM (:dirty: false).
+  } else {
+    GtkWidget* dialog =
+      gtk_file_chooser_dialog_new("Save State",
+                                  (GtkWindow*)jalv->window,
+                                  GTK_FILE_CHOOSER_ACTION_CREATE_FOLDER,
+                                  "_Cancel",
+                                  GTK_RESPONSE_CANCEL,
+                                  "_Save",
+                                  GTK_RESPONSE_ACCEPT,
+                                  NULL);
 
-  if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-    char* path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-    char* base = g_build_filename(path, "/", NULL);
-    jalv_save(jalv, base);
-    g_free(path);
-    g_free(base);
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+      char* path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+      char* base = g_build_filename(path, "/", NULL);
+      jalv_save(jalv, base);
+      g_free(path);
+      g_free(base);
+    }
+
+    gtk_widget_destroy(dialog);
   }
-
-  gtk_widget_destroy(dialog);
 }
 
 static void
@@ -297,6 +346,7 @@ symbolify(const char* in)
   }
   return out;
 }
+
 
 static void
 set_window_title(Jalv* jalv)
@@ -1120,6 +1170,7 @@ make_controller(ControlID* control, float value)
 static GtkWidget*
 new_label(const char* text, bool title, float xalign, float yalign)
 {
+  //jalv_log(JALV_LOG_INFO, "jalv_gtk.c: new_label(...) \n"); // TODO
   GtkWidget*  label = gtk_label_new(NULL);
   const char* fmt   = title ? "<span font_weight=\"bold\">%s</span>" : "%s:";
   gchar*      str   = g_markup_printf_escaped(fmt, text);
@@ -1338,7 +1389,7 @@ build_menu(Jalv* jalv, GtkWidget* window, GtkWidget* vbox)
 }
 
 bool
-jalv_frontend_discover(Jalv* ZIX_UNUSED(jalv))
+jalv_frontend_discover(Jalv* ZIX_UNUSED(jalv)) // NOTE TODO
 {
   return TRUE;
 }
@@ -1488,13 +1539,13 @@ jalv_frontend_select_plugin(Jalv* jalv)
 
 int
 jalv_frontend_open(Jalv* jalv)
-{
-  GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+{ 
+  GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL); // NSM NOTE https://docs.gtk.org/gtk3/ctor.Window.new.html
   jalv->window      = window;
 
   s_jalv = jalv;
 
-  g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), jalv);
+  g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy_nsm), jalv); // NSM
 
   set_window_title(jalv);
 
@@ -1550,9 +1601,27 @@ jalv_frontend_open(Jalv* jalv)
   jalv_init_ui(jalv);
 
   g_timeout_add(1000 / jalv->ui_update_hz, (GSourceFunc)jalv_update, jalv);
+  if (jalv->nsm_is_active) // NSM
+  {
+    if (jalv->nsm_gui_visible) {  // NSM
+      gtk_window_present(GTK_WINDOW(window));
+    } else {
+      // Do nothing TODO
+    }
+  } 
+  else
+  {
+    gtk_window_present(GTK_WINDOW(window));
+  }
+ 
+  // NSM NOTE 
+  //gtk_window_present(GTK_WINDOW(window));
+  //https://docs.gtk.org/gtk4/method.Window.present.html
+  //https://docs.gtk.org/gtk4/method.Window.close.html
+  //https://docs.gtk.org/gtk4/method.Widget.set_visible.html
+  //https://docs.gtk.org/gtk4/method.Window.set_hide_on_close.html
 
-  gtk_window_present(GTK_WINDOW(window));
-
+  
   gtk_main();
   suil_instance_free(jalv->ui_instance);
   jalv->ui_instance = NULL;
