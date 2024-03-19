@@ -1939,11 +1939,19 @@ jalv_init_nsm(Jalv* jalv, char*** argv, const char *n) { //, const char *nsm_url
     jalv_log(JALV_LOG_INFO, "(*argv)[0]: %s \n",(*argv)[0] );
 
     int timeout = 0;
-    /* NSM NOTE: we currently use jalv as pretty name for NSM, for all versions (gtk, qt).
+    /* NSM NOTES: we currently use jalv as pretty name for NSM, for all versions (gtk, qt).
      * The NSM server stores the pretty name, the executable name and the clienId in the
      * the session.nsm file: jalv:jalv.gtk3:nKLBV
      * If a user wants to change to a different version of jalv for the same project, it's 
      * probably easier if just one entry needs to be changed. 
+     *
+     * For the jalv version without GUI, a solution similar to non-mixer-noui 
+     * could likely work. 
+     *
+     * To change the labels of multiple instances of jalv, the idea is to set a
+     * label in the NSM GUI using JACK metadata. JACK metadata for a JACK client can be set
+     * in QjackCtl for example. A NSM client similar to JACKPatch could be written to (re)store
+     * the JACK metadata and send them to the NSM GUI. Prototyping showed that this should work.
      */
     char *pname = "jalv";
     nsm_send_announce(jalv->nsm, pname, ":optional-gui:", (*argv)[0]);
